@@ -6,6 +6,8 @@ public class LucidityController : MonoBehaviour
     [SerializeField] private float maxLucidity = 100f;
     [SerializeField] private float currentLucidity = 100f;
 
+    public float MaxLucidity => maxLucidity;
+
     public float CurrentLucidity => currentLucidity;
 
     public UnityEvent<float> OnLucidityChanged;
