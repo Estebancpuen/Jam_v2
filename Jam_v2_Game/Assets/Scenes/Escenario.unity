@@ -451,12 +451,18 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CameraFollowLN
   target: {fileID: 1788860590}
-  offset: {x: 0, y: 3, z: -6}
+  offset: {x: -6.03, y: 3.22, z: -1.65}
+  horizontalDeadzone: 3.39
+  verticalDeadzone: 3.29
+  depthDeadzone: 7.49
   lookAtTarget: 1
   rotationMode: 0
   fixedRotationEuler: {x: 0, y: 0, z: 0}
-  positionSmoothTime: 0.25
+  anchorSmoothTime: 0.99
   rotationSmoothSpeed: 4
+  enableIdleSway: 1
+  swayAmplitude: 0.25
+  swaySpeed: 1.06
 --- !u!1 &384936288
 GameObject:
   m_ObjectHideFlags: 0

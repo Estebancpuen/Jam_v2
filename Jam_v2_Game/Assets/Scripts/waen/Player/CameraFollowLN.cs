@@ -1,21 +1,32 @@
 using UnityEngine;
 
 /// <summary>
-/// Cámara semi-fija estilo Little Nightmares: sigue al jugador con un
-/// offset y suavizado, y opcionalmente puede "saltar" a un ancla de
-/// cámara distinta (ver CameraZone.cs) para cambiar el ángulo en
-/// ciertas zonas del nivel.
+/// Cámara semi-fija estilo Little Nightmares:
+/// - Se queda quieta mientras el jugador se mueve dentro de una "zona
+///   muerta" (deadzone) cómoda del encuadre.
+/// - Solo se desplaza cuando el jugador se acerca al borde de esa zona,
+///   y lo hace con seguimiento suave (no 1 a 1).
+/// - La rotación se mantiene prácticamente fija (nada de look-at dinámico).
+/// - Tiene un ligero balanceo idle (sway) para que no se sienta estática.
 /// </summary>
 public class CameraFollowLN : MonoBehaviour
 {
     [Header("Objetivo")]
     [SerializeField] private Transform target;
 
-    [Header("Offset por defecto")]
+    [Header("Offset por defecto (relativo al ancla)")]
     [SerializeField] private Vector3 offset = new Vector3(0f, 3f, -6f);
 
+    [Header("Deadzone (zona donde el jugador se mueve libre)")]
+    [Tooltip("Ancho total de la zona muerta en el eje horizontal de cámara.")]
+    [SerializeField] private float horizontalDeadzone = 3f;
+    [Tooltip("Alto total de la zona muerta en el eje vertical de cámara.")]
+    [SerializeField] private float verticalDeadzone = 2f;
+    [Tooltip("Profundidad total de la zona muerta (eje hacia/desde cámara).")]
+    [SerializeField] private float depthDeadzone = 3f;
+
     [Header("Encuadre")]
-    [Tooltip("Si está activo, la cámara SIEMPRE mira al target (puede verse rara cuando el jugador se acerca). Desactívalo para un encuadre fijo tipo Little Nightmares.")]
+    [Tooltip("Si está activo, la cámara SIEMPRE mira al target. Para Little Nightmares déjalo desactivado.")]
     [SerializeField] private bool lookAtTarget = false;
 
     public enum FixedRotationMode
@@ -24,18 +35,23 @@ public class CameraFollowLN : MonoBehaviour
         UseEulerValuesBelow
     }
 
-    [Tooltip("UseInitialSceneRotation: usa la rotación que la cámara tenga en la escena al arrancar (la que acomodas a mano). UseEulerValuesBelow: usa los valores de 'Fixed Rotation Euler', editables en vivo.")]
     [SerializeField] private FixedRotationMode rotationMode = FixedRotationMode.UseInitialSceneRotation;
-
-    [Tooltip("Solo se usa si Rotation Mode = UseEulerValuesBelow. Editable en vivo, incluso en Play mode.")]
     [SerializeField] private Vector3 fixedRotationEuler;
 
     [Header("Suavizado")]
-    [SerializeField] private float positionSmoothTime = 0.25f;
+    [Tooltip("Qué tan suave se mueve el ancla de cámara al salir de la deadzone. Más alto = más lento/cinematográfico.")]
+    [SerializeField] private float anchorSmoothTime = 0.6f;
     [SerializeField] private float rotationSmoothSpeed = 4f;
 
-    private Vector3 currentVelocity;
+    [Header("Balanceo idle (sway)")]
+    [SerializeField] private bool enableIdleSway = true;
+    [SerializeField] private float swayAmplitude = 0.03f;
+    [SerializeField] private float swaySpeed = 0.4f;
+
+    private Vector3 anchorPosition;
+    private Vector3 anchorVelocity;
     private Quaternion initialRotation;
+    private float swaySeed;
 
     // Si una CameraZone quiere forzar otro punto/ángulo de cámara
     private Transform overrideAnchor;
@@ -43,6 +59,12 @@ public class CameraFollowLN : MonoBehaviour
     private void Awake()
     {
         initialRotation = transform.rotation;
+        swaySeed = Random.Range(0f, 100f);
+
+        if (target != null)
+        {
+            anchorPosition = target.position;
+        }
     }
 
     private void LateUpdate()
@@ -50,60 +72,86 @@ public class CameraFollowLN : MonoBehaviour
         if (target == null)
             return;
 
-        Vector3 desiredPosition;
+        Quaternion baseRotation = GetBaseRotation();
 
-        if (overrideAnchor != null)
+        if (overrideAnchor == null)
         {
-            desiredPosition = overrideAnchor.position;
+            UpdateAnchorWithDeadzone(baseRotation);
         }
         else
         {
-            desiredPosition = target.position + offset;
+            anchorPosition = overrideAnchor.position - offset;
         }
 
-        transform.position = Vector3.SmoothDamp(
-            transform.position,
-            desiredPosition,
-            ref currentVelocity,
-            positionSmoothTime
+        Vector3 desiredPosition = anchorPosition + offset;
+
+        if (enableIdleSway)
+        {
+            desiredPosition += GetIdleSway(baseRotation);
+        }
+
+        // Posición: seguimiento directo (el suavizado real ya ocurre
+        // al mover el ancla, no aquí, para evitar doble "lag").
+        transform.position = desiredPosition;
+
+        Quaternion targetRotation = lookAtTarget
+            ? Quaternion.LookRotation((target.position + Vector3.up * 1.5f) - transform.position)
+            : (overrideAnchor != null ? overrideAnchor.rotation : baseRotation);
+
+        transform.rotation = Quaternion.Slerp(
+            transform.rotation,
+            targetRotation,
+            rotationSmoothSpeed * Time.deltaTime
         );
+    }
 
-        if (lookAtTarget)
-        {
-            Vector3 lookPoint = target.position + Vector3.up * 1.5f;
-            Quaternion targetRotation = Quaternion.LookRotation(lookPoint - transform.position);
+    private Quaternion GetBaseRotation()
+    {
+        return rotationMode == FixedRotationMode.UseEulerValuesBelow
+            ? Quaternion.Euler(fixedRotationEuler)
+            : initialRotation;
+    }
 
-            transform.rotation = Quaternion.Slerp(
-                transform.rotation,
-                targetRotation,
-                rotationSmoothSpeed * Time.deltaTime
-            );
-        }
-        else
-        {
-            Quaternion targetRotation;
+    private void UpdateAnchorWithDeadzone(Quaternion baseRotation)
+    {
+        Vector3 right = baseRotation * Vector3.right;
+        Vector3 up = baseRotation * Vector3.up;
+        Vector3 fwd = baseRotation * Vector3.forward;
 
-            if (overrideAnchor != null)
-            {
-                targetRotation = overrideAnchor.rotation;
-            }
-            else if (rotationMode == FixedRotationMode.UseEulerValuesBelow)
-            {
-                // Se lee en vivo cada frame: puedes ajustarlo en el inspector
-                // en Play Mode y verás el cambio de inmediato.
-                targetRotation = Quaternion.Euler(fixedRotationEuler);
-            }
-            else
-            {
-                targetRotation = initialRotation;
-            }
+        Vector3 delta = target.position - anchorPosition;
 
-            transform.rotation = Quaternion.Slerp(
-                transform.rotation,
-                targetRotation,
-                rotationSmoothSpeed * Time.deltaTime
-            );
-        }
+        float h = Vector3.Dot(delta, right);
+        float v = Vector3.Dot(delta, up);
+        float d = Vector3.Dot(delta, fwd);
+
+        float excessH = Mathf.Max(0f, Mathf.Abs(h) - horizontalDeadzone * 0.5f) * Mathf.Sign(h);
+        float excessV = Mathf.Max(0f, Mathf.Abs(v) - verticalDeadzone * 0.5f) * Mathf.Sign(v);
+        float excessD = Mathf.Max(0f, Mathf.Abs(d) - depthDeadzone * 0.5f) * Mathf.Sign(d);
+
+        Vector3 desiredAnchor = anchorPosition
+            + right * excessH
+            + up * excessV
+            + fwd * excessD;
+
+        anchorPosition = Vector3.SmoothDamp(
+            anchorPosition,
+            desiredAnchor,
+            ref anchorVelocity,
+            anchorSmoothTime
+        );
+    }
+
+    private Vector3 GetIdleSway(Quaternion baseRotation)
+    {
+        float t = Time.time * swaySpeed + swaySeed;
+
+        float swayX = (Mathf.PerlinNoise(t, 0f) - 0.5f) * 2f;
+        float swayY = (Mathf.PerlinNoise(0f, t) - 0.5f) * 2f;
+
+        Vector3 right = baseRotation * Vector3.right;
+        Vector3 up = baseRotation * Vector3.up;
+
+        return (right * swayX + up * swayY) * swayAmplitude;
     }
 
     /// <summary>Llamado por una CameraZone al entrar el jugador.</summary>
